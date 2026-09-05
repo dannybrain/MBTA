@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.pio/
+preview.png
+.cursor/
+
+firmware/include/secrets.h
+firmware/.pio/
