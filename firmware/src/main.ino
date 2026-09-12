@@ -69,8 +69,9 @@ static void refreshAllCaches(const char *status_override);
 static void runActiveSession();
 
 static void wifiPowerDown() {
-    WiFi.disconnect(true);
+    WiFi.disconnect(true, true);  // More aggressive disconnect
     WiFi.mode(WIFI_OFF);
+    delay(100);  // Allow time for WiFi radio to fully power down
 }
 
 static void wifiPowerUp() {
@@ -490,17 +491,8 @@ static void runActiveSession() {
         renderScreen(loading);
     }
 
-    // Keep screen active for 90 seconds
-    const uint32_t start_time = millis();
-    while (millis() - start_time < kActiveTimeoutMs) {
-        delay(1000);
-        // Refresh display every 30 seconds during active session
-        if ((millis() - start_time) % 30000 < 1000) {
-            if (g_has_last_screen) {
-                renderCachedNormal();
-            }
-        }
-    }
+    // Keep screen active for 90 seconds (no refresh needed - e-paper retains image)
+    delay(kActiveTimeoutMs);
 
     // Save state and power down
     const time_t now = time(nullptr);
@@ -677,8 +669,9 @@ static void refreshAllCaches(const char *status_override) {
 }
 
 void setup() {
-    Serial.begin(115200);
-    delay(500);
+    // Disable Serial to save power - USB serial interface consumes power even when not connected
+    // Serial.begin(115200);
+    // delay(500);
 
     if (!display.init_without_reset(false)) {
         while (true) delay(1000);
@@ -702,8 +695,14 @@ void setup() {
 
 void loop() {
     // Enter deep sleep - will only wake up via RST button (hardware reset)
-    Serial.println("[MBTA] Entering deep sleep. Press RST to check trains.");
+    // Serial.println("[MBTA] Entering deep sleep. Press RST to check trains.");
     delay(1000);
+    
+    // Power down I2C interface before deep sleep to prevent battery drain
+    Wire.end();
+    
+    // Ensure display is in lowest power mode
+    display.powerSaveOn();
     
     // Use deep sleep with no wake-up sources - only RST button will wake the device
     esp_deep_sleep_start();
