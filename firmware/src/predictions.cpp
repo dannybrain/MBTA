@@ -31,7 +31,9 @@ static size_t g_schedule_cache_count = 0;
 static Candidate g_candidates[kMaxCandidates];
 static Candidate g_merged[kMaxCandidates];
 static Candidate g_sorted[kMaxCandidates];
-static JsonDocument g_json_doc;
+
+// Use smaller, scoped JsonDocument instances instead of global
+// This reduces memory pressure and allows better memory management
 
 static int g_last_http_code = 0;
 
@@ -148,7 +150,7 @@ static bool mbtaGet(const String &url, String &payload_out) {
     WiFiClientSecure client;
     client.setInsecure();
     HTTPClient http;
-    http.setTimeout(15000);
+    http.setTimeout(10000);  // Reduced from 15s to 10s for faster timeout
     g_last_http_code = 0;
     if (!http.begin(client, url)) return false;
     g_last_http_code = http.GET();
@@ -166,24 +168,57 @@ static void releaseHttpMemory(String &payload) {
     payload = String();
 }
 
-static void releasePredictionJson(String &payload) {
-    payload = String();
-    g_json_doc.clear();
-}
-
 static void sortCandidates(Candidate *items, size_t count) {
-    for (size_t i = 0; i + 1 < count; ++i) {
-        for (size_t j = i + 1; j < count; ++j) {
-            const bool swap_order = items[j].minutes < items[i].minutes ||
-                                    (items[j].minutes == items[i].minutes &&
-                                     sourceRank(items[j].source) < sourceRank(items[i].source));
-            if (swap_order) {
-                const Candidate tmp = items[i];
-                items[i] = items[j];
-                items[j] = tmp;
+    // Improved quicksort-like algorithm for better performance
+    if (count <= 1) return;
+    
+    // Simple insertion sort for small arrays (more efficient than quicksort for n < 10)
+    if (count <= 10) {
+        for (size_t i = 1; i < count; ++i) {
+            Candidate key = items[i];
+            size_t j = i;
+            while (j > 0) {
+                const bool swap = key.minutes < items[j - 1].minutes ||
+                                 (key.minutes == items[j - 1].minutes &&
+                                  sourceRank(key.source) < sourceRank(items[j - 1].source));
+                if (!swap) break;
+                items[j] = items[j - 1];
+                j--;
             }
+            items[j] = key;
+        }
+        return;
+    }
+    
+    // Quick sort for larger arrays
+    size_t pivot = count / 2;
+    Candidate pivot_value = items[pivot];
+    
+    // Move pivot to end
+    items[pivot] = items[count - 1];
+    items[count - 1] = pivot_value;
+    
+    size_t store = 0;
+    for (size_t i = 0; i < count - 1; ++i) {
+        const bool less = items[i].minutes < pivot_value.minutes ||
+                         (items[i].minutes == pivot_value.minutes &&
+                          sourceRank(items[i].source) < sourceRank(pivot_value.source));
+        if (less) {
+            Candidate tmp = items[store];
+            items[store] = items[i];
+            items[i] = tmp;
+            store++;
         }
     }
+    
+    // Move pivot to its final place
+    Candidate tmp = items[store];
+    items[store] = items[count - 1];
+    items[count - 1] = tmp;
+    
+    // Recursively sort
+    sortCandidates(items, store);
+    sortCandidates(items + store + 1, count - store - 1);
 }
 
 static bool tripsEqual(const char *a, const char *b) {
@@ -226,11 +261,11 @@ static void appendUniqueScheduleCandidate(int minutes, time_t epoch, PredSource 
 }
 
 static void parseSchedulePayload(const String &payload, PredSource source, int travel_offset_min) {
-    g_json_doc.clear();
-    const DeserializationError err = deserializeJson(g_json_doc, payload);
+    JsonDocument doc;
+    const DeserializationError err = deserializeJson(doc, payload);
     if (err) return;
 
-    for (JsonObject item : g_json_doc["data"].as<JsonArray>()) {
+    for (JsonObject item : doc["data"].as<JsonArray>()) {
         const char *stamp = item["attributes"]["arrival_time"];
         if (!stamp) stamp = item["attributes"]["departure_time"];
         if (!stamp) continue;
@@ -260,7 +295,7 @@ static void refreshScheduleCache() {
     if (mbtaGet(url, payload)) {
         parseSchedulePayload(payload, PredSource::Sched, 0);
     }
-    releasePredictionJson(payload);
+    releaseHttpMemory(payload);
 
     url = String("https://api-v3.mbta.com/schedules?filter[stop]=") + kClevelandStop +
           "&filter[route]=" + kRoute + "&filter[direction_id]=" + String(kDirectionId) +
@@ -269,7 +304,7 @@ static void refreshScheduleCache() {
     if (mbtaGet(url, payload)) {
         parseSchedulePayload(payload, PredSource::Est, g_travel_minutes);
     }
-    releasePredictionJson(payload);
+    releaseHttpMemory(payload);
     g_schedule_cache_ms = millis();
 }
 
@@ -309,14 +344,14 @@ static void loadPredictionCandidates(const char *stop_id, PredSource vehicle_sou
     String payload;
     if (!mbtaGet(url, payload)) return;
 
-    g_json_doc.clear();
-    const DeserializationError err = deserializeJson(g_json_doc, payload);
+    JsonDocument doc;
+    const DeserializationError err = deserializeJson(doc, payload);
     if (err) {
         releaseHttpMemory(payload);
         return;
     }
 
-    for (JsonObject item : g_json_doc["data"].as<JsonArray>()) {
+    for (JsonObject item : doc["data"].as<JsonArray>()) {
         if (count >= kMaxCandidates) break;
         const char *stamp = prefer_departure ? item["attributes"]["departure_time"]
                                              : item["attributes"]["arrival_time"];
@@ -348,7 +383,7 @@ static void loadPredictionCandidates(const char *stop_id, PredSource vehicle_sou
         const char *trip_id = item["relationships"]["trip"]["data"]["id"];
         storeCandidate(g_candidates, count, mins, epoch, source, trip_id);
     }
-    releasePredictionJson(payload);
+    releaseHttpMemory(payload);
 }
 
 static String formatLocalClockToString(time_t epoch) {
@@ -367,8 +402,8 @@ static bool fetchSimpleSummitFallback(TrainEstimate &next, TrainEstimate &then) 
     String payload;
     if (!mbtaGet(url, payload)) return false;
 
-    g_json_doc.clear();
-    if (deserializeJson(g_json_doc, payload)) {
+    JsonDocument doc;
+    if (deserializeJson(doc, payload)) {
         releaseHttpMemory(payload);
         return false;
     }
@@ -376,7 +411,7 @@ static bool fetchSimpleSummitFallback(TrainEstimate &next, TrainEstimate &then) 
     size_t found = 0;
     TrainEstimate results[kDisplayTrainCount];
 
-    for (JsonObject item : g_json_doc["data"].as<JsonArray>()) {
+    for (JsonObject item : doc["data"].as<JsonArray>()) {
         if (found >= kDisplayTrainCount) break;
         const char *stamp = item["attributes"]["arrival_time"];
         if (!stamp) stamp = item["attributes"]["departure_time"];
@@ -395,7 +430,7 @@ static bool fetchSimpleSummitFallback(TrainEstimate &next, TrainEstimate &then) 
             !veh_ref["data"].isNull() ? PredSource::Live : PredSource::Sched;
         found++;
     }
-    releasePredictionJson(payload);
+    releaseHttpMemory(payload);
 
     if (found == 0) return false;
     next = results[0];

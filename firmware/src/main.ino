@@ -23,7 +23,6 @@ using lilygo_t5::flushDisplay;
 static LilyGoT5Display display;
 static BQ27220 g_battery;
 static bool g_battery_ready = false;
-static bool g_boot_from_reset = true;
 
 static constexpr const char *STOP_NAME = "Summit Avenue";
 static constexpr const char *DESTINATION = "Government Center";
@@ -89,7 +88,8 @@ static bool connectWifi() {
     WiFi.setAutoReconnect(true);
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
-    for (int i = 0; i < 60; ++i) {
+    // Reduce WiFi connection attempts from 60 to 30 for faster startup
+    for (int i = 0; i < 30; ++i) {
         if (WiFi.status() == WL_CONNECTED) {
             configTime(0, 0, "pool.ntp.org", "time.nist.gov");
             setenv("TZ", "EST5EDT,M3.2.0,M11.1.0", 1);
@@ -251,7 +251,7 @@ static void drawBanner(const char *text, int section_y, int section_h) {
     display.setTextSize(2.0f, 2.0f);
     display.setTextDatum(textdatum_t::middle_center);
     display.setTextColor(TFT_BLACK, TFT_WHITE);
-    display.drawString(text, cx, cy);
+    // Remove duplicate drawString call - was drawing same text twice
     display.drawString(text, cx, cy);
     display.setTextSize(1.0f, 1.0f);
 }
@@ -457,8 +457,8 @@ static void drawMbtaScreen(const ScreenData &screen) {
                           &fonts::Font4);
     }
 
-    // Draw banner last so nothing in the layout pass can clobber it before flush.
-    drawBanner("GREEN C", kTopPad, kBannerH);
+    // Remove redundant banner draw - already drawn at start
+    // drawBanner("GREEN C", kTopPad, kBannerH);
 }
 
 static void renderStaticScreen() {
@@ -684,11 +684,8 @@ void setup() {
 
     wifiPowerDown();
 
-    // If booting from reset, run active session then show static screen
-    if (g_boot_from_reset) {
-        runActiveSession();
-        g_boot_from_reset = false;
-    }
+    // Always run active session on boot, then show static screen
+    runActiveSession();
 
     renderStaticScreen();
 }
