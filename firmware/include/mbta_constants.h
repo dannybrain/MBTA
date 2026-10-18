@@ -14,4 +14,4 @@ static constexpr uint32_t kServiceWindowRefreshMs = 6UL * 3600UL * 1000UL;
 static constexpr uint32_t kActiveTimeoutMs = 90UL * 1000UL;
 
 // Firmware version shown on the train screen (replaces the old weather row).
-static constexpr const char *kFirmwareVersion = "v4.2.0";
+static constexpr const char *kFirmwareVersion = "v4.2.1";

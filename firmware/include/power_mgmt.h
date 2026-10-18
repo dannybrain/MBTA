@@ -53,6 +53,9 @@ inline void lightSleepOnly(uint32_t ms) {
         }
         remaining -= nap;
     }
+    // Disarm the timer wake-up armed by the last chunk — otherwise it leaks into
+    // the deep sleep that follows and wakes the device ~500ms later (reboot loop).
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
 }
 
 inline void lightSleepWait(uint32_t ms) {

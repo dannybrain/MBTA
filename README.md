@@ -8,7 +8,7 @@ This repo has three faces that share the same route defaults in `config.py`:
 2. **E-ink firmware** — runs on the [LilyGO T5 E-Paper S3](https://www.lilygo.cc/products/t5-4-7-inch-e-paper-v2-3) (540×960 portrait)
 3. **Mac preview** — pygame simulator matching the e-ink layout so you can iterate without reflashing
 
-Data comes from the [MBTA v3 API](https://www.mbta.com/developers/v3-api). The Mac preview refreshes every 30 seconds. Firmware **v4.2.0** maximizes battery life with deep sleep — shows static screen with battery gauge and "PRESS RST" prompt; pressing **RST** boots the device, fetches trains, displays for 90 seconds, then returns to deep sleep.
+Data comes from the [MBTA v3 API](https://www.mbta.com/developers/v3-api). The Mac preview refreshes every 30 seconds. Firmware **v4.2.1** maximizes battery life with deep sleep — shows static screen with battery gauge and "PRESS RST" prompt; pressing **RST** boots the device, fetches trains, displays for 90 seconds, then returns to deep sleep.
 
 ```
 ┌─────────────────────────────────────┐
@@ -22,7 +22,7 @@ Data comes from the [MBTA v3 API](https://www.mbta.com/developers/v3-api). The M
 │     minutes      │     minutes      │
 │     8:35 PM      │     8:45 PM      │
 ├──────────────────┴──────────────────┤
-│ Version:    v4.2.0                  │
+│ Version:    v4.2.1                  │
 ├─────────────────────────────────────┤
 │ Battery:    [████░░]           85%  │
 ├─────────────────────────────────────┤
@@ -79,13 +79,15 @@ On networks without SSL inspection you can run `python3 main.py` directly.
 
 Display styles (`--style`): `classic`, `double`, `minimal`, `kindle`, `greenline`, `ticker`, `boston`, `mbta`, `custom`.
 
-## E-ink firmware (v4.2.0)
+## E-ink firmware (v4.2.1)
 
-Firmware for the LilyGO T5 E-Paper S3 lives in `firmware/`. **v4.2.0** maximizes battery life with deep sleep mode — displays static screen with battery gauge, "PRESS RST to check trains", and last-checked time. Press **RST** to wake the device, fetch real-time train data, and display for 90 seconds before returning to deep sleep.
+Firmware for the LilyGO T5 E-Paper S3 lives in `firmware/`. **v4.2.1** maximizes battery life with deep sleep mode — displays static screen with battery gauge, "PRESS RST to check trains", and last-checked time. Press **RST** to wake the device, fetch real-time train data, and display for 90 seconds before returning to deep sleep.
 
 Copy `firmware/include/secrets.h.example` to `firmware/include/secrets.h` and fill in WiFi credentials plus your MBTA API key. That file is gitignored.
 
 The firmware uses M5GFX with the board's PCA9535 I/O expander and TPS65185 EPD power driver (`lilygo_t5_display.h`), reads battery state from the onboard BQ27220 fuel gauge, and uses deep sleep for maximum power efficiency.
+
+**v4.2.1:** Boot-loop fix — the 90 s light sleep arms its wake-up timer in 500 ms chunks and never disarmed it, so the leftover timer woke the device ~500 ms after entering deep sleep (every deep-sleep wake is a reboot). The timer is now disarmed before deep sleep.
 
 **v4.2.0:** Battery-life overhaul — the 90 s active wait now light-sleeps (~1 mA vs ~100 mA+), one shared TLS session across MBTA requests, schedule downloads cut from 500 to 40 entries, NTP only when the RTC clock is stale, CPU at 80 MHz, weather removed (firmware version shown on screen instead), faster loading-screen refresh, quieter logging.
 
