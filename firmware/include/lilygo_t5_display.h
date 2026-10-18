@@ -201,4 +201,16 @@ inline void flushDisplay(LilyGoT5Display &display) {
     display.powerSaveOn();
 }
 
+// Fast refresh for transient screens (e.g. the loading indicator): much quicker
+// and cheaper than a full-quality refresh; slight ghosting is fine here.
+inline void flushDisplayFast(LilyGoT5Display &display) {
+    display.setAutoDisplay(false);
+    display.setColorDepth(4);
+    display.setRotation(0);
+    display.setEpdMode(epd_mode_t::epd_fast);
+    display.display();
+    display.waitDisplay();
+    display.powerSaveOn();
+}
+
 }  // namespace lilygo_t5

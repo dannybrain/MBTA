@@ -10,6 +10,7 @@
 #include "lilygo_t5_display.h"
 
 using lilygo_t5::flushDisplay;
+using lilygo_t5::flushDisplayFast;
 
 namespace {
 
@@ -201,7 +202,7 @@ void renderLoading(lilygo_t5::LilyGoT5Display &display, int battery_percent) {
     drawBattery(display, battery_percent);
     drawLoadingPanel(display);
     display.endWrite();
-    flushDisplay(display);
+    flushDisplayFast(display);  // transient screen: fast refresh is enough
 }
 
 }  // namespace standby_screen

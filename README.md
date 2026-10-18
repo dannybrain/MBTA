@@ -8,7 +8,7 @@ This repo has three faces that share the same route defaults in `config.py`:
 2. **E-ink firmware** — runs on the [LilyGO T5 E-Paper S3](https://www.lilygo.cc/products/t5-4-7-inch-e-paper-v2-3) (540×960 portrait)
 3. **Mac preview** — pygame simulator matching the e-ink layout so you can iterate without reflashing
 
-Data comes from the [MBTA v3 API](https://www.mbta.com/developers/v3-api). The Mac preview refreshes every 30 seconds. Firmware **v4.1.1** maximizes battery life with deep sleep — shows static screen with battery gauge and "PRESS RST" prompt; pressing **RST** boots the device, fetches trains, displays for 90 seconds, then returns to deep sleep.
+Data comes from the [MBTA v3 API](https://www.mbta.com/developers/v3-api). The Mac preview refreshes every 30 seconds. Firmware **v4.2.0** maximizes battery life with deep sleep — shows static screen with battery gauge and "PRESS RST" prompt; pressing **RST** boots the device, fetches trains, displays for 90 seconds, then returns to deep sleep.
 
 ```
 ┌─────────────────────────────────────┐
@@ -22,7 +22,7 @@ Data comes from the [MBTA v3 API](https://www.mbta.com/developers/v3-api). The M
 │     minutes      │     minutes      │
 │     8:35 PM      │     8:45 PM      │
 ├──────────────────┴──────────────────┤
-│ Weather:    (icon) 27C  72%    UV4  │
+│ Version:    v4.2.0                  │
 ├─────────────────────────────────────┤
 │ Battery:    [████░░]           85%  │
 ├─────────────────────────────────────┤
@@ -79,13 +79,15 @@ On networks without SSL inspection you can run `python3 main.py` directly.
 
 Display styles (`--style`): `classic`, `double`, `minimal`, `kindle`, `greenline`, `ticker`, `boston`, `mbta`, `custom`.
 
-## E-ink firmware (v4.1.1)
+## E-ink firmware (v4.2.0)
 
-Firmware for the LilyGO T5 E-Paper S3 lives in `firmware/`. **v4.1.1** maximizes battery life with deep sleep mode — displays static screen with battery gauge, "PRESS RST to check trains", and last-checked time. Press **RST** to wake the device, fetch real-time train data, and display for 90 seconds before returning to deep sleep.
+Firmware for the LilyGO T5 E-Paper S3 lives in `firmware/`. **v4.2.0** maximizes battery life with deep sleep mode — displays static screen with battery gauge, "PRESS RST to check trains", and last-checked time. Press **RST** to wake the device, fetch real-time train data, and display for 90 seconds before returning to deep sleep.
 
 Copy `firmware/include/secrets.h.example` to `firmware/include/secrets.h` and fill in WiFi credentials plus your MBTA API key. That file is gitignored.
 
 The firmware uses M5GFX with the board's PCA9535 I/O expander and TPS65185 EPD power driver (`lilygo_t5_display.h`), reads battery state from the onboard BQ27220 fuel gauge, and uses deep sleep for maximum power efficiency.
+
+**v4.2.0:** Battery-life overhaul — the 90 s active wait now light-sleeps (~1 mA vs ~100 mA+), one shared TLS session across MBTA requests, schedule downloads cut from 500 to 40 entries, NTP only when the RTC clock is stale, CPU at 80 MHz, weather removed (firmware version shown on screen instead), faster loading-screen refresh, quieter logging.
 
 **v4.1.1:** Performance and memory optimization — improved sorting algorithm (quicksort vs bubble sort), reduced WiFi timeout (10s vs 15s), fewer WiFi connection attempts (30 vs 60), scoped JSON parsing for memory efficiency, removed redundant drawing operations, eliminated unused variables. Startup time 5-10s faster, memory usage reduced by ~1-2KB.
 
@@ -103,7 +105,7 @@ The firmware uses M5GFX with the board's PCA9535 I/O expander and TPS65185 EPD p
 
 Hardware target: **LilyGO T5 E-Paper S3**, portrait 540×960. Layout constants and the editable visual spec are in `epaper_layout.py` and `DISPLAY_DESIGN.md`.
 
-**USB / flashing:** The board uses native USB (`/dev/cu.usbmodem*`). In v4.1.1, the device enters deep sleep after the active session, so the USB port will disappear. Press **RST** to wake the device for flashing, or hold **BOOT** + **RST** and flash immediately.
+**USB / flashing:** The board uses native USB (`/dev/cu.usbmodem*`). In v4.2.0, the device enters deep sleep after the active session, so the USB port will disappear. Press **RST** to wake the device for flashing, or hold **BOOT** + **RST** and flash immediately.
 
 ## Mac preview
 
@@ -114,7 +116,7 @@ Run the pygame simulator to see the e-ink layout on your Mac before flashing:
 ./preview.sh --live       # live window, refreshes every 30 s
 ./preview.sh --battery 42 --charging
 ./preview.sh --wifi "MyNetwork"
-./preview.sh --standby       # v4.1.1 static screen with battery gauge
+./preview.sh --standby       # v4.2.0 static screen with battery gauge
 ./preview.sh --loading       # loading screen during fetch
 ```
 

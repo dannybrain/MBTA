@@ -5,12 +5,12 @@
 #include <ArduinoJson.h>
 #include <Wire.h>
 #include <time.h>
-#include <math.h>
 #include <esp_sleep.h>
 
 #include "bq27220.h"
 #include "lilygo_t5_display.h"
 #include "mbta_constants.h"
+#include "power_mgmt.h"
 #include "predictions.h"
 #include "secrets.h"
 #include "standby_prefs.h"
@@ -27,16 +27,11 @@ static bool g_battery_ready = false;
 static constexpr const char *STOP_NAME = "Summit Avenue";
 static constexpr const char *DESTINATION = "Government Center";
 static constexpr int kMargin = 16;
-static constexpr int kWeatherInvalid = -1;
 static constexpr int kBatteryInvalid = -1;
 
 struct ScreenData {
     TrainEstimate next;
     TrainEstimate then;
-    int weather_code = kWeatherInvalid;
-    int humidity_percent = kWeatherInvalid;
-    int temp_c = kWeatherInvalid;
-    int uv_index = kWeatherInvalid;
     String status_message;
     int battery_percent = kBatteryInvalid;
     bool battery_charging = false;
@@ -44,21 +39,11 @@ struct ScreenData {
     String updated_line;
 };
 
-struct WeatherSnapshot {
-    int weather_code = kWeatherInvalid;
-    int precip_percent = 0;
-    int humidity_percent = kWeatherInvalid;
-    int temp_c = kWeatherInvalid;
-    int uv_index = kWeatherInvalid;
-};
-
-static WeatherSnapshot g_weather;
 static ScreenData g_last_screen;
 static bool g_has_last_screen = false;
 static time_t g_last_checked_epoch = 0;
 static uint16_t g_quote_index = 0;
 
-static bool waitForValidTime();
 static String wifiLine();
 static void renderScreen(const ScreenData &screen);
 static void renderStaticScreen();
@@ -91,10 +76,7 @@ static bool connectWifi() {
     // Reduce WiFi connection attempts from 60 to 30 for faster startup
     for (int i = 0; i < 30; ++i) {
         if (WiFi.status() == WL_CONNECTED) {
-            configTime(0, 0, "pool.ntp.org", "time.nist.gov");
-            setenv("TZ", "EST5EDT,M3.2.0,M11.1.0", 1);
-            tzset();
-            waitForValidTime();
+            predictionsEnsureTime();  // skips NTP when the RTC clock is still fresh
             return true;
         }
         delay(250);
@@ -112,7 +94,10 @@ static void applyCachedTrains(ScreenData &screen) {
 }
 
 static void finalizeScreenFooter(ScreenData &screen, const char *status_override) {
-    if (status_override) {
+    if (screen.status_message.length() > 0) {
+        // Surface fetch errors in the footer (they used to show in the weather row)
+        screen.updated_line = screen.status_message;
+    } else if (status_override) {
         screen.updated_line = status_override;
     } else if (screen.next.minutes < 0) {
         screen.updated_line = "No upcoming trains";
@@ -127,11 +112,10 @@ static constexpr int kBottomPad = 20;
 static constexpr int kSectionGap = 12;
 static constexpr int kBannerH = 56;
 static constexpr int kRouteH = 56;
-static constexpr int kWeatherH = 60;
 static constexpr int kStatusH = 48;
 static constexpr int kFooterH = 44;
 static constexpr int kFixedH =
-    kTopPad + kBannerH + kRouteH + kWeatherH + (kStatusH * 2) + kFooterH + kBottomPad +
+    kTopPad + kBannerH + kRouteH + (kStatusH * 3) + kFooterH + kBottomPad +
     (6 * (1 + kSectionGap));
 
 static void initBattery() {
@@ -149,74 +133,6 @@ static void readBattery(int &percent_out, bool &charging_out) {
     percent_out = g_battery.getStateOfCharge();
     if (percent_out > 100) percent_out = 100;
     charging_out = g_battery.getIsCharging();
-}
-
-static void drawCloudBlob(int cx, int cy, int scale) {
-    display.fillCircle(cx - scale, cy, scale, TFT_BLACK);
-    display.fillCircle(cx + scale / 3, cy - scale / 2, scale, TFT_BLACK);
-    display.fillCircle(cx + scale, cy, scale - 1, TFT_BLACK);
-    display.fillRect(cx - scale - 1, cy, scale * 2 + scale / 3 + 2, scale + 1, TFT_BLACK);
-}
-
-static void drawWeatherIcon(int cx, int cy, int code, int size) {
-    const int r = size / 4;
-    if (code == 0) {
-        display.fillCircle(cx, cy, r, TFT_BLACK);
-        for (int i = 0; i < 8; ++i) {
-            const float a = i * (float)M_PI / 4.0f;
-            const int x1 = cx + (int)lround(cosf(a) * (r + 2));
-            const int y1 = cy + (int)lround(sinf(a) * (r + 2));
-            const int x2 = cx + (int)lround(cosf(a) * (r + size / 3));
-            const int y2 = cy + (int)lround(sinf(a) * (r + size / 3));
-            display.drawLine(x1, y1, x2, y2, TFT_BLACK);
-        }
-        return;
-    }
-    if (code >= 1 && code <= 2) {
-        display.fillCircle(cx - size / 5, cy - size / 8, r - 1, TFT_BLACK);
-        for (int i = 0; i < 8; ++i) {
-            const float a = i * (float)M_PI / 4.0f;
-            const int x2 = cx - size / 5 + (int)lround(cosf(a) * (r + size / 5));
-            const int y2 = cy - size / 8 + (int)lround(sinf(a) * (r + size / 5));
-            display.drawLine(cx - size / 5, cy - size / 8, x2, y2, TFT_BLACK);
-        }
-        drawCloudBlob(cx + size / 8, cy + size / 10, size / 5);
-        return;
-    }
-    if (code == 3) {
-        drawCloudBlob(cx, cy, size / 4);
-        return;
-    }
-    if (code == 45 || code == 48) {
-        for (int i = -2; i <= 2; ++i) {
-            display.drawLine(cx - size / 2, cy + i * 3, cx + size / 2, cy + i * 3, TFT_BLACK);
-        }
-        return;
-    }
-    if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) {
-        drawCloudBlob(cx, cy - size / 8, size / 5);
-        for (int i = -1; i <= 1; ++i) {
-            display.drawLine(cx + i * (size / 4), cy + size / 4, cx + i * (size / 4) - 2,
-                             cy + size / 2, TFT_BLACK);
-        }
-        return;
-    }
-    if ((code >= 71 && code <= 77) || (code >= 85 && code <= 86)) {
-        drawCloudBlob(cx, cy - size / 8, size / 5);
-        display.drawPixel(cx - 3, cy + size / 3, TFT_BLACK);
-        display.drawPixel(cx, cy + size / 3 + 2, TFT_BLACK);
-        display.drawPixel(cx + 3, cy + size / 3, TFT_BLACK);
-        display.drawPixel(cx - 2, cy + size / 3 + 4, TFT_BLACK);
-        display.drawPixel(cx + 2, cy + size / 3 + 4, TFT_BLACK);
-        return;
-    }
-    if (code >= 95 && code <= 99) {
-        drawCloudBlob(cx, cy - size / 6, size / 5);
-        display.drawLine(cx - 4, cy + size / 4, cx + 2, cy + size / 2, TFT_BLACK);
-        display.drawLine(cx + 4, cy + size / 4, cx - 2, cy + size / 2, TFT_BLACK);
-        return;
-    }
-    display.drawRect(cx - size / 4, cy - size / 4, size / 2, size / 2, TFT_BLACK);
 }
 
 static void drawRule(int y, int width) {
@@ -309,50 +225,6 @@ static void drawPanel(int x, int y, int w, int h, const char *label, const Train
     }
 }
 
-static void drawWeatherLine(int y, int section_h, const ScreenData &screen) {
-    const int mid_y = y + section_h / 2;
-    const int value_x = valueColumnX();
-    const int right_x = display.width() - kMargin;
-
-    if (screen.status_message.length() > 0) {
-        drawRowLabel("Weather:", mid_y);
-        drawRowValueText(screen.status_message.c_str(), mid_y);
-        return;
-    }
-    if (screen.humidity_percent < 0 || screen.temp_c == kWeatherInvalid) {
-        drawRowLabel("Weather:", mid_y);
-        drawRowValueText("--", mid_y);
-        return;
-    }
-
-    char values[40];
-    if (screen.uv_index >= 0) {
-        snprintf(values, sizeof(values), "%dC  %d%%  UV%d", screen.temp_c, screen.humidity_percent,
-                 screen.uv_index);
-    } else {
-        snprintf(values, sizeof(values), "%dC  %d%%", screen.temp_c, screen.humidity_percent);
-    }
-
-    drawRowLabel("Weather:", mid_y);
-
-    display.setFont(&fonts::Font4);
-    const int icon_size = 24;
-    const int gap = 8;
-    const int text_w = display.textWidth(values);
-    const int icon_x = value_x + icon_size / 2;
-    const int text_x = value_x + icon_size + gap;
-
-    if (text_x + text_w > right_x) {
-        drawRowValueText(values, mid_y);
-        return;
-    }
-
-    drawWeatherIcon(icon_x, mid_y, screen.weather_code, icon_size);
-    display.setTextDatum(textdatum_t::middle_left);
-    display.setTextColor(TFT_BLACK, TFT_WHITE);
-    display.drawString(values, text_x, mid_y);
-}
-
 static void drawBatteryLine(int y, int section_h, int percent, bool charging) {
     const int mid_y = y + section_h / 2;
     const int value_x = valueColumnX();
@@ -405,6 +277,12 @@ static void drawWifiLine(int y, int section_h, const char *wifi_line) {
     drawRowValueText(wifi_line, mid_y);
 }
 
+static void drawVersionLine(int y, int section_h) {
+    const int mid_y = y + section_h / 2;
+    drawRowLabel("Version:", mid_y);
+    drawRowValueText(kFirmwareVersion, mid_y);
+}
+
 static String wifiLine() {
     return WiFi.status() == WL_CONNECTED ? String("connected") : String("offline");
 }
@@ -440,15 +318,15 @@ static void drawMbtaScreen(const ScreenData &screen) {
     y += panel_h;
     drawSectionRule(y, content_w);
 
-    drawWeatherLine(y, kWeatherH, screen);
-    y += kWeatherH;
-    drawSectionRule(y, content_w);
-
     drawBatteryLine(y, kStatusH, screen.battery_percent, screen.battery_charging);
     y += kStatusH;
     drawSectionRule(y, content_w);
 
     drawWifiLine(y, kStatusH, screen.wifi_line.c_str());
+    y += kStatusH;
+    drawSectionRule(y, content_w);
+
+    drawVersionLine(y, kStatusH);
     y += kStatusH;
     drawSectionRule(y, content_w);
 
@@ -486,15 +364,11 @@ static void runActiveSession() {
         loading.status_message = "No trains";
         loading.wifi_line = wifiLine();
         readBattery(loading.battery_percent, loading.battery_charging);
-        applyWeather(loading);
         finalizeScreenFooter(loading, nullptr);
         renderScreen(loading);
     }
 
-    // Keep screen active for 90 seconds (no refresh needed - e-paper retains image)
-    delay(kActiveTimeoutMs);
-
-    // Save state and power down
+    // Save state, then power down WiFi — nothing after this needs the network
     const time_t now = time(nullptr);
     if (now > 1700000000) {
         g_last_checked_epoch = now;
@@ -502,6 +376,10 @@ static void runActiveSession() {
     }
 
     wifiPowerDown();
+
+    // Idle on the train screen for 90 seconds (no refresh needed - e-paper retains
+    // image). Light sleep instead of a busy delay: ~1mA instead of ~100mA+.
+    lightSleepOnly(kActiveTimeoutMs);
 }
 
 static String buildFooterLine(const String &base) {
@@ -513,67 +391,6 @@ static void renderScreen(const ScreenData &screen) {
     drawMbtaScreen(screen);
     display.endWrite();
     flushDisplay(display);
-}
-
-static bool waitForValidTime() {
-    for (int i = 0; i < 30; ++i) {
-        const time_t now = time(nullptr);
-        if (now > 1700000000) return true;
-        delay(500);
-    }
-    return false;
-}
-
-static bool fetchWeather(WeatherSnapshot &weather_out) {
-    WiFiClientSecure client;
-    client.setInsecure();
-    HTTPClient http;
-    const char *url =
-        "https://api.open-meteo.com/v1/forecast?"
-        "latitude=42.3318&longitude=-71.1212"
-        "&current=weather_code,relative_humidity_2m,temperature_2m,uv_index"
-        "&hourly=precipitation_probability"
-        "&timezone=America/New_York&forecast_hours=24";
-
-    if (!http.begin(client, url)) return false;
-    const int code = http.GET();
-    if (code != HTTP_CODE_OK) {
-        http.end();
-        return false;
-    }
-
-    JsonDocument doc;
-    if (deserializeJson(doc, http.getString())) {
-        http.end();
-        return false;
-    }
-    http.end();
-
-    weather_out.weather_code = doc["current"]["weather_code"] | kWeatherInvalid;
-    weather_out.humidity_percent = doc["current"]["relative_humidity_2m"] | kWeatherInvalid;
-    weather_out.temp_c = (int)lround(doc["current"]["temperature_2m"] | (double)kWeatherInvalid);
-    weather_out.uv_index = (int)lround(doc["current"]["uv_index"] | (double)kWeatherInvalid);
-    weather_out.precip_percent = 0;
-
-    JsonArray times = doc["hourly"]["time"].as<JsonArray>();
-    JsonArray probs = doc["hourly"]["precipitation_probability"].as<JsonArray>();
-    if (!times.isNull() && !probs.isNull() && times.size() > 0) {
-        char hour_key[32];
-        struct tm local_tm = {};
-        const time_t now = time(nullptr);
-        localtime_r(&now, &local_tm);
-        strftime(hour_key, sizeof(hour_key), "%Y-%m-%dT%H:00", &local_tm);
-
-        for (size_t i = 0; i < times.size(); ++i) {
-            const char *stamp = times[i];
-            if (stamp && strcmp(stamp, hour_key) == 0) {
-                weather_out.precip_percent = probs[i] | 0;
-                break;
-            }
-        }
-    }
-
-    return weather_out.humidity_percent >= 0 && weather_out.temp_c != kWeatherInvalid;
 }
 
 static String updatedLine() {
@@ -591,17 +408,9 @@ static String updatedLine() {
     return String(out);
 }
 
-static void applyWeather(ScreenData &screen) {
-    screen.weather_code = g_weather.weather_code;
-    screen.humidity_percent = g_weather.humidity_percent;
-    screen.temp_c = g_weather.temp_c;
-    screen.uv_index = g_weather.uv_index;
-}
-
 static ScreenData fetchScreenData(const char *status_override = nullptr) {
     ScreenData screen;
     readBattery(screen.battery_percent, screen.battery_charging);
-    applyWeather(screen);
     screen.wifi_line = wifiLine();
 
     if (!connectWifi()) {
@@ -620,12 +429,6 @@ static ScreenData fetchScreenData(const char *status_override = nullptr) {
         screen.status_message = "";
     }
 
-    WeatherSnapshot weather;
-    if (fetchWeather(weather)) {
-        g_weather = weather;
-    }
-    applyWeather(screen);
-
     screen.wifi_line = wifiLine();
     readBattery(screen.battery_percent, screen.battery_charging);
     return screen;
@@ -634,7 +437,6 @@ static ScreenData fetchScreenData(const char *status_override = nullptr) {
 static void renderCachedNormal() {
     ScreenData render_data = g_last_screen;
     readBattery(render_data.battery_percent, render_data.battery_charging);
-    applyWeather(render_data);
     render_data.wifi_line = wifiLine();
     refreshTrainEstimates(render_data.next, render_data.then);
     finalizeScreenFooter(render_data, nullptr);
@@ -652,10 +454,6 @@ static void refreshAllCaches(const char *status_override) {
     } else if (g_has_last_screen) {
         g_last_screen.battery_percent = render_data.battery_percent;
         g_last_screen.battery_charging = render_data.battery_charging;
-        g_last_screen.weather_code = render_data.weather_code;
-        g_last_screen.humidity_percent = render_data.humidity_percent;
-        g_last_screen.temp_c = render_data.temp_c;
-        g_last_screen.uv_index = render_data.uv_index;
         g_last_screen.wifi_line = render_data.wifi_line;
         if (render_data.status_message.length() > 0) {
             g_last_screen.status_message = render_data.status_message;
@@ -672,6 +470,10 @@ void setup() {
     // Disable Serial to save power - USB serial interface consumes power even when not connected
     // Serial.begin(115200);
     // delay(500);
+
+    // 80MHz is plenty for JSON parsing and the e-paper UI; roughly halves active
+    // current vs the 240MHz default. WiFi needs at least 80MHz to stay stable.
+    setCpuFrequencyMhz(80);
 
     if (!display.init_without_reset(false)) {
         while (true) delay(1000);
@@ -693,8 +495,7 @@ void setup() {
 void loop() {
     // Enter deep sleep - will only wake up via RST button (hardware reset)
     // Serial.println("[MBTA] Entering deep sleep. Press RST to check trains.");
-    delay(1000);
-    
+
     // Power down I2C interface before deep sleep to prevent battery drain
     Wire.end();
     

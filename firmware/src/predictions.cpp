@@ -13,7 +13,9 @@
 static constexpr const char *kRoute = "Green-C";
 static constexpr uint8_t kDirectionId = 1;
 static constexpr size_t kMaxCandidates = 16;
-static constexpr size_t kSchedulePageLimit = 500;
+// Only kMaxCandidates (16) schedule entries are ever kept; fetching 500 was
+// ~10x the download for nothing.
+static constexpr size_t kSchedulePageLimit = 40;
 
 static int g_travel_minutes = kDefaultTravelMinutes;
 static uint32_t g_schedule_cache_ms = 0;
@@ -69,15 +71,27 @@ void predictionsResetCache() {
     g_schedule_cache_ms = 0;
 }
 
+// Last successful NTP sync, kept in RTC memory so it survives deep sleep.
+// RTC_DATA_ATTR is zero-initialized on cold boot and preserved across wakes.
+static RTC_DATA_ATTR time_t s_last_ntp_sync_epoch = 0;
+static constexpr uint32_t kNtpResyncIntervalSec = 6UL * 3600UL;
+
 bool predictionsEnsureTime() {
-    if (time(nullptr) > 1700000000) return true;
+    const time_t now = time(nullptr);
+    if (now > 1700000000 && s_last_ntp_sync_epoch > 0 &&
+        (uint32_t)(now - s_last_ntp_sync_epoch) < kNtpResyncIntervalSec) {
+        return true;  // clock survived deep sleep and is still fresh — skip NTP
+    }
 
     configTime(0, 0, "pool.ntp.org", "time.nist.gov");
     setenv("TZ", "EST5EDT,M3.2.0,M11.1.0", 1);
     tzset();
 
     for (int i = 0; i < 40; ++i) {
-        if (time(nullptr) > 1700000000) return true;
+        if (time(nullptr) > 1700000000) {
+            s_last_ntp_sync_epoch = time(nullptr);
+            return true;
+        }
         delay(250);
     }
     return false;
@@ -146,20 +160,25 @@ static int minutesUntilEpoch(time_t arrival_epoch) {
     return (int)lround(difftime(arrival_epoch, now) / 60.0);
 }
 
+// One TLS session shared by every MBTA request in a wake cycle. With keep-alive,
+// HTTPClient leaves the connection open across end(), so only the first request
+// pays the ~1-2s TLS handshake; the rest reuse the live session.
+static WiFiClientSecure s_tls_client;
+static HTTPClient s_http_client;
+
 static bool mbtaGet(const String &url, String &payload_out) {
-    WiFiClientSecure client;
-    client.setInsecure();
-    HTTPClient http;
-    http.setTimeout(10000);  // Reduced from 15s to 10s for faster timeout
+    s_tls_client.setInsecure();
+    s_http_client.setReuse(true);
+    s_http_client.setTimeout(10000);  // Reduced from 15s to 10s for faster timeout
     g_last_http_code = 0;
-    if (!http.begin(client, url)) return false;
-    g_last_http_code = http.GET();
+    if (!s_http_client.begin(s_tls_client, url)) return false;
+    g_last_http_code = s_http_client.GET();
     if (g_last_http_code != HTTP_CODE_OK) {
-        http.end();
+        s_http_client.end();
         return false;
     }
-    payload_out = http.getString();
-    http.end();
+    payload_out = s_http_client.getString();
+    s_http_client.end();  // session stays open for reuse while the server allows it
     payload_out.trim();
     return payload_out.length() > 0;
 }
